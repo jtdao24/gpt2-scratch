@@ -14,6 +14,36 @@ n_head          12
 n_embd         768
 ```
 
+### Conventions
+
+Module names mirror Hugging Face GPT-2 exactly, so pretrained weights load without key
+remapping in the pretrained-weight stage:
+
+```
+transformer.wte, transformer.wpe
+transformer.h.{i}.ln_1, .attn.c_attn, .attn.c_proj
+transformer.h.{i}.ln_2, .mlp.c_fc,   .mlp.c_proj
+transformer.ln_f
+lm_head                              (bias=False, weight tied to wte)
+```
+
+Shape contract, where `B` = batch, `T` = sequence length (`T <= block_size`),
+`C` = `n_embd`, `nh` = `n_head`, `hs` = `head_dim` (= 64):
+
+```
+idx      (B, T)             int64, values in [0, vocab_size)
+tok_emb  (B, T, C)
+pos_emb  (T, C)             broadcast over batch
+x        (B, T, C)          residual stream — invariant through every block
+qkv      (B, T, 3C)         single c_attn projection, split into three
+q, k, v  (B, nh, T, hs)
+att      (B, nh, T, T)      causal-masked
+logits   (B, T, vocab_size)
+loss     ()                 scalar, mean cross-entropy over B*T
+```
+
+The residual stream stays `(B, T, C)` end to end.
+
 ## Setup
 
 ```powershell
@@ -37,6 +67,6 @@ Run tests with:
 
 ## Plan
 
-config → embeddings → attention → MLP → transformer block → full model → loss →
+✅ config → ✅ embeddings → attention → MLP → transformer block → full model → loss →
 data pipeline → training → checkpointing → generation → pretrained weight loading →
 reference validation

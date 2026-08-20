@@ -33,6 +33,23 @@ def test_medium_pretrained_config() -> None:
     assert config.head_dim == 64
 
 
+def test_small_pretrained_config() -> None:
+    config = GPTConfig.from_pretrained_name("gpt2")
+
+    assert config.n_layer == 12
+    assert config.n_head == 12
+    assert config.n_embd == 768
+
+
+def test_all_pretrained_configs_use_gpt2_context_and_vocabulary() -> None:
+    names = ("gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl")
+
+    for name in names:
+        config = GPTConfig.from_pretrained_name(name)
+        assert config.block_size == 1024
+        assert config.vocab_size == 50257
+
+
 def test_unknown_pretrained_name() -> None:
     with pytest.raises(ValueError):
         GPTConfig.from_pretrained_name("gpt2-tiny")

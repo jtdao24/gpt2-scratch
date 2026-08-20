@@ -1,3 +1,5 @@
+# On Blackwell / RTX 50-series GPUs, install the CUDA 12.8 (or newer) wheel from
+# https://download.pytorch.org/whl/cu128; earlier wheels lack sm_120 kernels.
 torch
 numpy
 tiktoken
