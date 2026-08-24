@@ -1,9 +1,61 @@
 """GPT-2 model components."""
 
+import math
+
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from .config import GPTConfig
+
+
+class CausalSelfAttention(nn.Module):
+    """Multi-head self-attention with a causal mask."""
+
+    def __init__(self, config: GPTConfig) -> None:
+        super().__init__()
+        if config.n_embd % config.n_head != 0:
+            raise ValueError(
+                f"n_embd ({config.n_embd}) must be divisible by "
+                f"n_head ({config.n_head})"
+            )
+
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+
+        # One fused projection produces query, key, and value together.
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=True)
+        # The output projection mixes the concatenated heads back together.
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=True)
+
+        # Stage 6 reads this marker to scale residual projections by
+        # 1/sqrt(2*n_layer), keeping residual-stream variance in check.
+        self.c_proj.GPT_SCALE_INIT = True
+
+        mask = torch.tril(
+            torch.ones(config.block_size, config.block_size, dtype=torch.bool)
+        )
+        self.register_buffer(
+            "bias",
+            mask.view(1, 1, config.block_size, config.block_size),
+            persistent=False,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, C = x.size()
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        att = att.masked_fill(~self.bias[:, :, :T, :T], float("-inf"))
+        att = F.softmax(att, dim=-1)
+        y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        return self.c_proj(y)
 
 
 class GPT(nn.Module):
