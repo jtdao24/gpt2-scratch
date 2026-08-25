@@ -58,6 +58,29 @@ class CausalSelfAttention(nn.Module):
         return self.c_proj(y)
 
 
+class MLP(nn.Module):
+    """Position-wise feed-forward network used by GPT-2."""
+
+    def __init__(self, config: GPTConfig) -> None:
+        super().__init__()
+        # Expand to four times the residual width.
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=True)
+        # GPT-2 uses the tanh approximation of GELU.
+        self.gelu = nn.GELU(approximate="tanh")
+        # Project back down to the residual width.
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=True)
+
+        # Stage 6 reads this marker to scale residual projections by
+        # 1/sqrt(2*n_layer).
+        self.c_proj.GPT_SCALE_INIT = True
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        return x
+
+
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig) -> None:
         super().__init__()
