@@ -67,6 +67,6 @@ Run tests with:
 
 ## Plan
 
-✅ config → ✅ embeddings → ✅ attention → ✅ MLP → ✅ transformer block → full model → loss →
+✅ config → ✅ embeddings → ✅ attention → ✅ MLP → ✅ transformer block → ✅ full model → loss →
 data pipeline → training → checkpointing → generation → pretrained weight loading →
 reference validation

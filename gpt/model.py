@@ -107,14 +107,26 @@ class GPT(nn.Module):
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
                 # Sequence positions map to learned positional embeddings.
                 wpe=nn.Embedding(config.block_size, config.n_embd),
+                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                ln_f=nn.LayerNorm(config.n_embd),
             )
         )
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        # The output projection reuses the token embedding table.
+        self.transformer.wte.weight = self.lm_head.weight
+
         self.apply(self._init_weights)
 
     def _init_weights(self, module: nn.Module) -> None:
-        # Stage 6 extends this for nn.Linear and residual-projection scaling by
-        # 1/sqrt(2*n_layer).
-        if isinstance(module, nn.Embedding):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, "GPT_SCALE_INIT"):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx: torch.Tensor) -> torch.Tensor:
@@ -125,6 +137,9 @@ class GPT(nn.Module):
             )
 
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
-        tok_emb = self.transformer.wte(idx)
-        pos_emb = self.transformer.wpe(pos)
-        return tok_emb + pos_emb
+        x = self.transformer.wte(idx) + self.transformer.wpe(pos)
+        for block in self.transformer.h:
+            x = block(x)
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)
+        return logits

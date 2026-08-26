@@ -20,7 +20,7 @@ def test_output_shape() -> None:
 
     output = model(idx)
 
-    assert output.shape == (2, 5, 32)
+    assert output.shape == (2, 5, 100)
 
 
 def test_output_dtype_is_float32() -> None:
@@ -46,7 +46,7 @@ def test_sequence_equal_to_block_size_is_allowed() -> None:
 
     output = model(idx)
 
-    assert output.shape == (1, 16, 32)
+    assert output.shape == (1, 16, 100)
 
 
 def test_position_changes_embedding_for_same_token() -> None:
@@ -58,13 +58,14 @@ def test_position_changes_embedding_for_same_token() -> None:
     assert not torch.equal(output[0, 0], output[0, 1])
 
 
-def test_parameter_names_match_gpt2_checkpoint() -> None:
+def test_embedding_parameter_names_match_gpt2_checkpoint() -> None:
     model = GPT(small_config())
 
-    assert set(dict(model.named_parameters())) == {
+    names = set(dict(model.named_parameters()))
+    assert {
         "transformer.wte.weight",
         "transformer.wpe.weight",
-    }
+    } <= names
 
 
 def test_default_embedding_shapes() -> None:
