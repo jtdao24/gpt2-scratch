@@ -129,7 +129,11 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        idx: torch.Tensor,
+        targets: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, T = idx.size()
         if T > self.config.block_size:
             raise ValueError(
@@ -142,4 +146,15 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
-        return logits
+        loss = None
+        if targets is not None:
+            if targets.shape != idx.shape:
+                raise ValueError(
+                    f"targets shape {tuple(targets.shape)} must match "
+                    f"idx shape {tuple(idx.shape)}"
+                )
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+            )
+        return logits, loss

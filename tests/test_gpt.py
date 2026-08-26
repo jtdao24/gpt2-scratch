@@ -27,7 +27,7 @@ def test_logits_shape_and_dtype() -> None:
     model = GPT(small_config())
     idx = torch.randint(0, 100, (2, 5))
 
-    logits = model(idx)
+    logits, _ = model(idx)
 
     assert logits.shape == (2, 5, 100)
     assert logits.dtype == torch.float32
@@ -139,11 +139,11 @@ def test_causality_holds_end_to_end() -> None:
     torch.manual_seed(2)
     model = GPT(small_config())
     idx = torch.randint(0, 100, (1, 5))
-    logits1 = model(idx)
+    logits1, _ = model(idx)
     idx2 = idx.clone()
     idx2[:, -1] = (idx2[:, -1] + 1) % model.config.vocab_size
 
-    logits2 = model(idx2)
+    logits2, _ = model(idx2)
 
     assert torch.allclose(logits1[0, :-1], logits2[0, :-1], atol=1e-5)
     assert not torch.allclose(logits1[0, -1], logits2[0, -1])
@@ -154,7 +154,7 @@ def test_sequence_length_limits() -> None:
     at_limit = torch.zeros((1, 16), dtype=torch.long)
     over_limit = torch.zeros((1, 17), dtype=torch.long)
 
-    logits = model(at_limit)
+    logits, _ = model(at_limit)
 
     assert logits.shape == (1, 16, 100)
     with pytest.raises(ValueError, match=r"T=17.*block_size=16"):
@@ -166,7 +166,7 @@ def test_gradients_flow_end_to_end() -> None:
     model = GPT(small_config())
     idx = torch.randint(0, 100, (2, 5))
 
-    model(idx).sum().backward()
+    model(idx)[0].sum().backward()
 
     assert model.transformer.wte.weight.grad is not None
     assert model.transformer.h[0].attn.c_attn.weight.grad is not None
@@ -178,7 +178,7 @@ def test_tied_weight_gradient_is_nonzero() -> None:
     model = GPT(small_config())
     idx = torch.randint(0, 100, (2, 5))
 
-    model(idx).sum().backward()
+    model(idx)[0].sum().backward()
 
     gradient = model.transformer.wte.weight.grad
     assert gradient is not None
@@ -192,6 +192,6 @@ def test_model_runs_on_cuda() -> None:
     model = GPT(small_config()).to(device)
     idx = torch.randint(0, 100, (2, 5), device=device)
 
-    logits = model(idx)
+    logits, _ = model(idx)
 
     assert logits.device == idx.device

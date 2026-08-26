@@ -18,7 +18,7 @@ def test_output_shape() -> None:
     model = GPT(small_config())
     idx = torch.randint(0, 100, (2, 5))
 
-    output = model(idx)
+    output, _ = model(idx)
 
     assert output.shape == (2, 5, 100)
 
@@ -27,7 +27,7 @@ def test_output_dtype_is_float32() -> None:
     model = GPT(small_config())
     idx = torch.randint(0, 100, (2, 5))
 
-    output = model(idx)
+    output, _ = model(idx)
 
     assert output.dtype == torch.float32
 
@@ -44,7 +44,7 @@ def test_sequence_equal_to_block_size_is_allowed() -> None:
     model = GPT(small_config())
     idx = torch.zeros((1, 16), dtype=torch.long)
 
-    output = model(idx)
+    output, _ = model(idx)
 
     assert output.shape == (1, 16, 100)
 
@@ -53,7 +53,7 @@ def test_position_changes_embedding_for_same_token() -> None:
     model = GPT(small_config())
     idx = torch.tensor([[7, 7]], dtype=torch.long)
 
-    output = model(idx)
+    output, _ = model(idx)
 
     assert not torch.equal(output[0, 0], output[0, 1])
 
@@ -88,7 +88,7 @@ def test_embedding_weights_receive_gradients() -> None:
     model = GPT(small_config())
     idx = torch.tensor([[1, 2, 1]], dtype=torch.long)
 
-    model(idx).sum().backward()
+    model(idx)[0].sum().backward()
 
     assert model.transformer.wte.weight.grad is not None
     assert model.transformer.wpe.weight.grad is not None
@@ -100,6 +100,6 @@ def test_forward_uses_input_device_for_positions() -> None:
     model = GPT(small_config()).to(device)
     idx = torch.randint(0, 100, (2, 5), device=device)
 
-    output = model(idx)
+    output, _ = model(idx)
 
     assert output.device == idx.device
