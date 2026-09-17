@@ -1,4 +1,5 @@
 import math
+from unittest import mock
 
 import pytest
 import torch
@@ -16,6 +17,28 @@ def small_config() -> GPTConfig:
         n_head=4,
         n_embd=32,
     )
+
+
+def manual_attention_weights(
+    attn: CausalSelfAttention, x: torch.Tensor
+) -> torch.Tensor:
+    B, T, C = x.size()
+    q, k, _ = attn.c_attn(x).split(attn.n_embd, dim=2)
+    q = q.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
+    k = k.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
+    weights = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+    mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=x.device))
+    weights = weights.masked_fill(~mask, float("-inf"))
+    return F.softmax(weights, dim=-1)
+
+
+def manual_attention(attn: CausalSelfAttention, x: torch.Tensor) -> torch.Tensor:
+    B, T, C = x.size()
+    _, _, v = attn.c_attn(x).split(attn.n_embd, dim=2)
+    v = v.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
+    y = manual_attention_weights(attn, x) @ v
+    y = y.transpose(1, 2).contiguous().view(B, T, C)
+    return attn.c_proj(y)
 
 
 def test_output_shape() -> None:
@@ -60,13 +83,7 @@ def test_attention_rows_sum_to_one() -> None:
     torch.manual_seed(3)
     attn = CausalSelfAttention(small_config())
     x = torch.randn(2, 5, 32)
-    B, T, C = x.size()
-    q, k, _ = attn.c_attn(x).split(attn.n_embd, dim=2)
-    q = q.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
-    k = k.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
-    weights = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-    weights = weights.masked_fill(~attn.bias[:, :, :T, :T], float("-inf"))
-    weights = F.softmax(weights, dim=-1)
+    weights = manual_attention_weights(attn, x)
 
     row_sums = weights.sum(dim=-1)
 
@@ -77,13 +94,8 @@ def test_future_attention_weights_are_zero() -> None:
     torch.manual_seed(4)
     attn = CausalSelfAttention(small_config())
     x = torch.randn(2, 5, 32)
-    B, T, C = x.size()
-    q, k, _ = attn.c_attn(x).split(attn.n_embd, dim=2)
-    q = q.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
-    k = k.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
-    weights = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-    weights = weights.masked_fill(~attn.bias[:, :, :T, :T], float("-inf"))
-    weights = F.softmax(weights, dim=-1)
+    T = x.size(1)
+    weights = manual_attention_weights(attn, x)
     upper_triangle = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
 
     assert torch.count_nonzero(weights[..., upper_triangle]).item() == 0
@@ -114,13 +126,7 @@ def test_short_sequences_work() -> None:
     assert output1.shape == (2, 1, 32)
     assert output3.shape == (2, 3, 32)
 
-    B, T, C = x1.size()
-    q, k, _ = attn.c_attn(x1).split(attn.n_embd, dim=2)
-    q = q.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
-    k = k.view(B, T, attn.n_head, C // attn.n_head).transpose(1, 2)
-    weights = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-    weights = weights.masked_fill(~attn.bias[:, :, :T, :T], float("-inf"))
-    weights = F.softmax(weights, dim=-1)
+    weights = manual_attention_weights(attn, x1)
 
     assert torch.equal(weights, torch.ones_like(weights))
 
@@ -136,10 +142,11 @@ def test_parameter_names_match_gpt2_attention() -> None:
     }
 
 
-def test_causal_mask_is_not_in_state_dict() -> None:
+def test_attention_has_no_buffers() -> None:
     attn = CausalSelfAttention(small_config())
 
     assert "bias" not in attn.state_dict()
+    assert list(attn.buffers()) == []
 
 
 def test_gradients_flow_through_attention() -> None:
@@ -185,3 +192,67 @@ def test_matches_independent_scaled_dot_product_reference() -> None:
     reference = attn.c_proj(torch.cat(head_outputs, dim=2))
 
     assert torch.allclose(attn(x), reference, atol=1e-5)
+
+
+def test_matches_manual_reference() -> None:
+    torch.manual_seed(9)
+    attn = CausalSelfAttention(small_config())
+
+    for sequence_length in (1, 3, 5, 16):
+        x = torch.randn(2, sequence_length, 32)
+        assert torch.allclose(attn(x), manual_attention(attn, x), atol=1e-5)
+
+
+def test_forward_uses_sdpa() -> None:
+    attn = CausalSelfAttention(small_config())
+    x = torch.randn(2, 5, 32)
+
+    with mock.patch(
+        "torch.nn.functional.scaled_dot_product_attention",
+        wraps=F.scaled_dot_product_attention,
+    ) as spy:
+        attn(x)
+
+    assert spy.call_count == 1
+    assert spy.call_args.kwargs.get("is_causal") is True
+    assert "attn_mask" not in spy.call_args.kwargs
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA")
+def test_full_size_matches_manual_reference_on_cuda() -> None:
+    torch.manual_seed(10)
+    device = torch.device("cuda")
+    attn = CausalSelfAttention(GPTConfig()).to(device)
+    x = torch.randn(2, 1024, 768, device=device)
+
+    with torch.no_grad():
+        output = attn(x)
+        reference = manual_attention(attn, x)
+
+    assert torch.allclose(output, reference, atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA")
+def test_sdpa_uses_less_memory_on_cuda() -> None:
+    torch.manual_seed(11)
+    device = torch.device("cuda")
+    attn = CausalSelfAttention(GPTConfig()).to(device)
+    x = torch.randn(1, 1024, 768, device=device, requires_grad=True)
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    sdpa_baseline = torch.cuda.memory_allocated()
+    attn(x).sum().backward()
+    torch.cuda.synchronize()
+    sdpa_peak = torch.cuda.max_memory_allocated() - sdpa_baseline
+
+    attn.zero_grad(set_to_none=True)
+    x.grad = None
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    manual_baseline = torch.cuda.memory_allocated()
+    manual_attention(attn, x).sum().backward()
+    torch.cuda.synchronize()
+    manual_peak = torch.cuda.max_memory_allocated() - manual_baseline
+
+    assert sdpa_peak < 0.5 * manual_peak
