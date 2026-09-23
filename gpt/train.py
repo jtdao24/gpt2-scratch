@@ -11,12 +11,13 @@ import datetime
 import json
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import torch
 from torch import nn
 
+from .checkpoint import load_checkpoint, save_checkpoint
 from .config import GPTConfig
 from .data import DataLoader
 from .model import GPT
@@ -48,6 +49,10 @@ class TrainConfig:
     use_amp: bool = True
     compile_model: bool = False
     seed: int = 1337
+
+    checkpoint_interval: int = 1000
+    snapshot_interval: int = 0
+    resume: bool = False
 
     def __post_init__(self) -> None:
         micro_batch_tokens = self.micro_batch_size * self.sequence_length
@@ -162,10 +167,89 @@ def train(config: TrainConfig) -> Path:
         betas=(config.beta1, config.beta2),
         device_type=device_type,
     )
+    min_lr = config.max_lr * config.min_lr_ratio
+    rolling_checkpoint_path = config.out_dir / "ckpt.pt"
+    train_config_dict = asdict(config)
+    model_config_dict = asdict(config.model_config)
+    start_step = 0
+    last_val_loss = float("nan")
+
+    if config.resume:
+        try:
+            checkpoint = load_checkpoint(
+                rolling_checkpoint_path,
+                map_location="cpu",
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"resume checkpoint not found at {rolling_checkpoint_path}; "
+                "start the run without --resume"
+            ) from exc
+
+        saved_model_config = checkpoint["model_config"]
+        if not isinstance(saved_model_config, dict):
+            raise ValueError("saved model_config is not a dictionary")
+        if saved_model_config != model_config_dict:
+            differing_fields = sorted(
+                set(saved_model_config) | set(model_config_dict)
+            )
+            differences = [
+                f"{field_name}: saved {saved_model_config.get(field_name)!r}, "
+                f"current {model_config_dict.get(field_name)!r}"
+                for field_name in differing_fields
+                if saved_model_config.get(field_name)
+                != model_config_dict.get(field_name)
+            ]
+            raise ValueError("model_config mismatch: " + "; ".join(differences))
+
+        saved_train_config = checkpoint["train_config"]
+        if not isinstance(saved_train_config, dict):
+            raise ValueError("saved train_config is not a dictionary")
+        for field_name in (
+            "micro_batch_size",
+            "sequence_length",
+            "total_batch_size",
+        ):
+            saved_value = saved_train_config.get(field_name)
+            current_value = getattr(config, field_name)
+            if saved_value != current_value:
+                raise ValueError(
+                    f"{field_name} mismatch: saved {saved_value!r}, "
+                    f"current {current_value!r}"
+                )
+
+        for field_name in (
+            "max_steps",
+            "warmup_steps",
+            "max_lr",
+            "min_lr_ratio",
+        ):
+            saved_value = saved_train_config.get(field_name)
+            current_value = getattr(config, field_name)
+            if saved_value != current_value:
+                print(
+                    f"warning: {field_name} changed from saved {saved_value!r} "
+                    f"to current {current_value!r}"
+                )
+
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        start_step = int(checkpoint["step"])
+        train_position = int(checkpoint["train_position"])
+        required_tokens = config.micro_batch_size * config.sequence_length + 1
+        if train_position + required_tokens > len(train_loader.tokens):
+            print(
+                f"checkpoint train_position {train_position} cannot provide the "
+                f"next {required_tokens} tokens; resetting it to 0"
+            )
+            train_position = 0
+        train_loader.position = train_position
+        last_val_loss = float(checkpoint["val_loss"])
+        del checkpoint
+
     if config.compile_model:
         model = torch.compile(model)
 
-    min_lr = config.max_lr * config.min_lr_ratio
     amp = torch.autocast(
         device_type=device_type,
         dtype=torch.bfloat16,
@@ -195,20 +279,25 @@ def train(config: TrainConfig) -> Path:
             "n_embd": config.model_config.n_embd,
             "vocab_size": config.model_config.vocab_size,
             "block_size": config.model_config.block_size,
+            "resumed_from": start_step if config.resume else None,
         }
         log_file.write(json.dumps(run_record) + "\n")
         log_file.flush()
 
-        for step in range(config.max_steps):
+        for step in range(start_step, config.max_steps):
             if step % config.eval_interval == 0:
-                val_loss = evaluate(
+                last_val_loss = evaluate(
                     model,
                     val_loader,
                     steps=config.eval_steps,
                     device=config.device,
                     use_amp=config.use_amp,
                 )
-                val_record = {"type": "val", "step": step, "loss": val_loss}
+                val_record = {
+                    "type": "val",
+                    "step": step,
+                    "loss": last_val_loss,
+                }
                 log_file.write(json.dumps(val_record) + "\n")
                 log_file.flush()
 
@@ -265,14 +354,51 @@ def train(config: TrainConfig) -> Path:
                 f"dt {elapsed * 1000.0:.2f} ms | tok/s {tokens_per_sec:.0f}"
             )
 
-        val_loss = evaluate(
+            completed_step = step + 1
+            if (
+                config.checkpoint_interval > 0
+                and completed_step % config.checkpoint_interval == 0
+            ) or step == config.max_steps - 1:
+                save_checkpoint(
+                    rolling_checkpoint_path,
+                    model=model,
+                    optimizer=optimizer,
+                    step=completed_step,
+                    train_position=train_loader.position,
+                    val_loss=last_val_loss,
+                    train_config=train_config_dict,
+                    model_config=model_config_dict,
+                )
+            if (
+                config.snapshot_interval > 0
+                and completed_step % config.snapshot_interval == 0
+            ):
+                snapshot_path = (
+                    config.out_dir / f"ckpt_{completed_step:06d}.pt"
+                )
+                save_checkpoint(
+                    snapshot_path,
+                    model=model,
+                    optimizer=optimizer,
+                    step=completed_step,
+                    train_position=train_loader.position,
+                    val_loss=last_val_loss,
+                    train_config=train_config_dict,
+                    model_config=model_config_dict,
+                )
+
+        last_val_loss = evaluate(
             model,
             val_loader,
             steps=config.eval_steps,
             device=config.device,
             use_amp=config.use_amp,
         )
-        val_record = {"type": "val", "step": config.max_steps, "loss": val_loss}
+        val_record = {
+            "type": "val",
+            "step": config.max_steps,
+            "loss": last_val_loss,
+        }
         log_file.write(json.dumps(val_record) + "\n")
         log_file.flush()
 
@@ -298,6 +424,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--eval-steps", type=int, default=defaults.eval_steps)
     parser.add_argument("--device", default=defaults.device)
     parser.add_argument("--seed", type=int, default=defaults.seed)
+    parser.add_argument(
+        "--checkpoint-interval", type=int, default=defaults.checkpoint_interval
+    )
+    parser.add_argument(
+        "--snapshot-interval",
+        type=int,
+        default=defaults.snapshot_interval,
+        help="retain a separate full-size checkpoint at this interval; increases disk use",
+    )
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--compile", action="store_true", dest="compile_model")
     args = parser.parse_args(argv)
@@ -315,6 +451,9 @@ def main(argv: list[str] | None = None) -> None:
         eval_steps=args.eval_steps,
         device=args.device,
         seed=args.seed,
+        checkpoint_interval=args.checkpoint_interval,
+        snapshot_interval=args.snapshot_interval,
+        resume=args.resume,
         use_amp=not args.no_amp,
         compile_model=args.compile_model,
     )
