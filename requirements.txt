@@ -5,4 +5,5 @@ numpy
 tiktoken
 pytest
 
-# transformers
+# Only for pretrained weights and validation references; never the model.
+transformers
