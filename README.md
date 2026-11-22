@@ -29,11 +29,14 @@ implementation's outputs.
 - Checkpointing of the model, optimizer state, step and data position, written
   atomically so an interrupted save cannot corrupt the previous checkpoint.
 - Text generation with temperature and top-k sampling, from any checkpoint.
-- Loading OpenAI's pretrained weights. The loaded model's logits match Hugging
-  Face's implementation to within 4.6 × 10⁻⁵.
+- Loading OpenAI's pretrained weights into this project's model.
+- A validation harness that compares the model, loaded with OpenAI's weights,
+  against Hugging Face's implementation: identical parameters, logits within
+  2 × 10⁻⁴ (about 10⁻⁶ relative) at five input sizes, matching loss on random
+  and real text, identical greedy generation, and GPU runs in fp32 and bf16.
 
-Not done yet: a validation harness comparing against the reference across many
-inputs, and a long training run on a large corpus.
+Not done yet: training the model from scratch on a large corpus, and evaluating
+that model against OpenAI's.
 
 Naming rules, tensor shapes and the design points GPT-2 compatibility depends
 on are in [docs/architecture.md](docs/architecture.md).
@@ -85,6 +88,28 @@ project's format. The second loads that checkpoint into this project's model.
 On Windows, if characters such as dashes print as `�`, set `PYTHONUTF8=1`. The
 generated text is correct; only the console display is affected.
 
+### Validating against the reference
+
+```text
+$ python -m gpt.validate --device cuda --output results/validation.json
+status name                                             value  threshold                               detail
+pass   architecture                                         -  exact match                             Model dimensions, LayerNorm, GELU, and weight tying agree
+pass   parameters                                           0  0 mismatches                            124,439,808 parameters and 149 tensors
+...
+pass   text loss                                      4.24583  abs diff < 1e-5                         32 windows, reference=4.245830, diff=2.24e-08, perplexity=69.81
+pass   generation: The meaning of life is                   -  exact tokens                            50 generated tokens match
+...
+15 passed, 0 failed, 0 skipped
+```
+
+The harness loads both models and checks architecture, parameters, logits,
+loss, greedy generation, GPU precision, and agreement with a second attention
+implementation that does not use PyTorch's fused kernel. Precision is never
+mixed within a comparison: fp32 is compared with fp32 and bf16 with bf16. It
+exits with a nonzero status if any check fails. `--output` writes the results
+as JSON together with the library versions, GPU and git commit. Without CUDA,
+the GPU checks are skipped.
+
 ### Training
 
 Prepare the TinyShakespeare corpus, about 1 MB of text:
@@ -129,10 +154,10 @@ work on Windows.
 
 ```text
 python -m pytest -m "not network"   # offline, under 10 seconds
-python -m pytest                    # everything; the first run downloads GPT-2 (about 500 MB)
+python -m pytest                    # everything, about 2 minutes; the first run downloads GPT-2 (about 500 MB)
 ```
 
-There are 142 tests, 136 of which run offline. They check behavior rather than
+There are 152 tests, 141 of which run offline. They check behavior rather than
 only output shapes. Among them:
 
 - a future token never changes the model's output at an earlier position;
@@ -141,19 +166,40 @@ only output shapes. Among them:
 - gradient accumulation produces the same gradients as one large batch;
 - a resumed run matches an uninterrupted run exactly, on the CPU;
 - a small model trained on a repeating pattern generates that pattern;
-- the model loaded with OpenAI's weights matches Hugging Face's outputs, and a
-  copy that skips one required transpose does not.
+- the model loaded with OpenAI's weights passes the validation harness, while
+  copies with one transpose missing, or with a single bias shifted by 0.01,
+  fail it.
 
 ## Measured results
 
-Measured during development on one machine: an RTX 5060 (8 GB), PyTorch
-2.11.0+cu128, Python 3.12 and Windows 11. These are one-off measurements, not
-results from a committed benchmark suite.
+### Validation
+
+From [the validation report](results/2026-11-22-validation-c5c6831.json),
+recorded at commit `c5c6831` on an RTX 5060 (8 GB) with PyTorch 2.11.0+cu128,
+Transformers 5.22.2 and Python 3.12.10:
+
+| Check | Result |
+|---|---|
+| Parameters | all 149 tensors identical |
+| Logits, five input sizes up to 2 × 1024 | max difference 1.9 × 10⁻⁴, at most 1.3 × 10⁻⁶ relative; same top token at every position |
+| Loss on random tokens | difference 9.5 × 10⁻⁷ |
+| Loss on the TinyShakespeare validation split | 4.2458 for both models, perplexity 69.8; difference 2.2 × 10⁻⁸ |
+| Greedy generation, 3 prompts × 50 tokens | identical tokens |
+| Second attention implementation | max difference 1.4 × 10⁻⁴ |
+| GPU, bf16 against bf16 | same top token at every position |
+| GPU, bf16 against fp32 | up to 1.58 apart: the cost of bf16's lower precision, not an implementation difference |
+
+The 4.2458 that pretrained GPT-2 scores on this split is the baseline for
+comparing models trained in this project.
+
+### Development measurements
+
+Measured during development on the same machine, with Windows 11. These are
+one-off measurements, not results from a committed report.
 
 | Measurement | Result |
 |---|---|
-| Logits against Hugging Face, OpenAI's weights | max difference 4.6 × 10⁻⁵ |
-| The same, with `attn.c_proj` left untransposed | max difference 121 |
+| Logits with `attn.c_proj` left untransposed | max difference 121 |
 | Training speed, batches of 4 × 1024, bf16 | about 25,000 tokens/s, 5.2 GB peak |
 | The same with batches of 8 × 1024 | 8.8 GB, more than the card holds; about 6,000 tokens/s |
 | One attention layer, forward and backward, 1 × 1024, fp32 | 43 MB with fused attention, about 220 MB computed explicitly |
@@ -171,6 +217,8 @@ gpt/train.py             training loop, learning-rate schedule, optimizer setup
 gpt/checkpoint.py        atomic checkpoint saving and safe loading
 gpt/generate.py          sampling, text generation, command-line tool
 gpt/hf_weights.py        loads OpenAI's weights into the model
+gpt/validate.py          compares the model with Hugging Face's reference
 docs/architecture.md     naming rules, tensor shapes, compatibility notes
+results/                 recorded validation reports
 tests/                   test suite
 ```

@@ -1,0 +1,122 @@
+{
+  "created": "2026-11-22T04:51:58.078739+00:00",
+  "torch": "2.11.0+cu128",
+  "transformers": "5.22.2",
+  "python": "3.12.10",
+  "device": "NVIDIA GeForce RTX 5060",
+  "git_commit": "c5c6831a4e15337577d74ef4359740b570e70909",
+  "checks": [
+    {
+      "name": "architecture",
+      "status": "pass",
+      "value": null,
+      "threshold": "exact match",
+      "detail": "Model dimensions, LayerNorm, GELU, and weight tying agree"
+    },
+    {
+      "name": "parameters",
+      "status": "pass",
+      "value": 0.0,
+      "threshold": "0 mismatches",
+      "detail": "124,439,808 parameters and 149 tensors"
+    },
+    {
+      "name": "logits (1, 1)",
+      "status": "pass",
+      "value": 5.340576171875e-05,
+      "threshold": "abs < 1e-3, rel < 1e-5, argmax = 100%",
+      "detail": "relative=1.17e-06, argmax=100.000000%"
+    },
+    {
+      "name": "logits (1, 16)",
+      "status": "pass",
+      "value": 0.0001373291015625,
+      "threshold": "abs < 1e-3, rel < 1e-5, argmax = 100%",
+      "detail": "relative=9.82e-07, argmax=100.000000%"
+    },
+    {
+      "name": "logits (2, 64)",
+      "status": "pass",
+      "value": 0.00012969970703125,
+      "threshold": "abs < 1e-3, rel < 1e-5, argmax = 100%",
+      "detail": "relative=1.1e-06, argmax=100.000000%"
+    },
+    {
+      "name": "logits (4, 256)",
+      "status": "pass",
+      "value": 0.00017547607421875,
+      "threshold": "abs < 1e-3, rel < 1e-5, argmax = 100%",
+      "detail": "relative=1.29e-06, argmax=100.000000%"
+    },
+    {
+      "name": "logits (2, 1024)",
+      "status": "pass",
+      "value": 0.00019073486328125,
+      "threshold": "abs < 1e-3, rel < 1e-5, argmax = 100%",
+      "detail": "relative=1.3e-06, argmax=100.000000%"
+    },
+    {
+      "name": "aligned loss",
+      "status": "pass",
+      "value": 9.5367431640625e-07,
+      "threshold": "< 1e-5",
+      "detail": "ours=12.09694481, reference=12.09694576, 1023 pairs per batch row"
+    },
+    {
+      "name": "text loss",
+      "status": "pass",
+      "value": 4.245829805731773,
+      "threshold": "abs diff < 1e-5",
+      "detail": "32 windows, reference=4.245830, diff=2.24e-08, perplexity=69.81"
+    },
+    {
+      "name": "generation: The meaning of life is",
+      "status": "pass",
+      "value": null,
+      "threshold": "exact tokens",
+      "detail": "50 generated tokens match"
+    },
+    {
+      "name": "generation: Hello, I am a language model,",
+      "status": "pass",
+      "value": null,
+      "threshold": "exact tokens",
+      "detail": "50 generated tokens match"
+    },
+    {
+      "name": "generation: In 1492, Columbus",
+      "status": "pass",
+      "value": null,
+      "threshold": "exact tokens",
+      "detail": "50 generated tokens match"
+    },
+    {
+      "name": "GPU fp32",
+      "status": "pass",
+      "value": 0.0001983642578125,
+      "threshold": "abs < 1e-3, rel < 1e-5, argmax = 100%",
+      "detail": "relative=1.84e-06, argmax=100.000000%"
+    },
+    {
+      "name": "GPU bf16",
+      "status": "pass",
+      "value": 1.0,
+      "threshold": "argmax >= 99%, loss diff < 1e-2",
+      "detail": "argmax=100.000000%, loss diff=0.000375, max abs diff=0"
+    },
+    {
+      "name": "GPU bf16 vs fp32",
+      "status": "info",
+      "value": 1.5825119018554688,
+      "threshold": "",
+      "detail": "bf16 precision cost, loss diff=0.00695"
+    },
+    {
+      "name": "eager reference",
+      "status": "pass",
+      "value": 0.00014495849609375,
+      "threshold": "abs < 1e-3, rel < 1e-5, argmax = 100%",
+      "detail": "relative=1.28e-06, argmax=100.000000%"
+    }
+  ]
+}
