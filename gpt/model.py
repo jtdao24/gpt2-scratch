@@ -140,7 +140,7 @@ class GPT(nn.Module):
                     f"idx shape {tuple(idx.shape)}"
                 )
             loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                targets.view(-1),
+                logits.reshape(-1, logits.size(-1)),
+                targets.reshape(-1),
             )
         return logits, loss

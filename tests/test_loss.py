@@ -170,3 +170,19 @@ def test_loss_runs_on_cuda() -> None:
 
     assert loss is not None
     assert loss.device == idx.device
+
+
+def test_non_contiguous_targets_are_accepted() -> None:
+    config = small_config()
+    model = GPT(config)
+    idx = torch.randint(
+        config.vocab_size, (2, 9), generator=torch.Generator().manual_seed(10)
+    )
+
+    _, loss = model(idx[:, :-1], targets=idx[:, 1:])
+    _, contiguous_loss = model(idx[:, :-1], targets=idx[:, 1:].contiguous())
+
+    assert not idx[:, 1:].is_contiguous()
+    assert loss is not None
+    assert contiguous_loss is not None
+    assert torch.equal(loss, contiguous_loss)
